@@ -4,7 +4,7 @@ from pathlib import Path
 
 NFL_KICKOFF = datetime(2026, 9, 10, tzinfo=timezone.utc)
 
-CONFIG_PATH = Path("discord-channels.json")
+CONFIG_PATH = Path("config/discord-channels.json")
 
 with open(CONFIG_PATH, "r") as f:
     CHANNELS = json.load(f)
@@ -18,7 +18,6 @@ def days_until_kickoff():
 
 def get_channel_id(name: str):
     return CHANNELS.get(name)
-
 
 def build_countdown_message():
     days = days_until_kickoff()
