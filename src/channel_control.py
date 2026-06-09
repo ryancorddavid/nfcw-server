@@ -73,7 +73,7 @@ async def close_channel(guild, channel, reason=None):
         color=discord.Color.red()
     )
     if reason:
-        embed.add_field(name="Reason", value=reason, inline=False)
+        embed.add_field(name="Message", value=reason, inline=False)
     await channel.send(embed=embed)
 
 
