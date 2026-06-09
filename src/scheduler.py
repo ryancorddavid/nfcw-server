@@ -1,27 +1,83 @@
+import asyncio
 import json
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import datetime, timedelta
+import pytz
 
-NFL_KICKOFF = datetime(2026, 9, 10, tzinfo=timezone.utc)
+from countdown import get_channel_id, build_countdown_message
 
-CONFIG_PATH = Path("config/discord-channels.json")
+PT = pytz.timezone("America/Los_Angeles")
 
-with open(CONFIG_PATH, "r") as f:
-    CHANNELS = json.load(f)
-
-
-def days_until_kickoff():
-    now = datetime.now(timezone.utc)
-    delta = NFL_KICKOFF - now
-    return max(delta.days, 0)
+STATE_FILE = "nfl_post_state.json"
 
 
-def get_channel_id(name: str):
-    return CHANNELS.get(name)
+# --------------------------------------#
+# State handling (prevents duplicates)  #
+# --------------------------------------#
+def load_state():
+    try:
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
 
-def build_countdown_message():
-    days = days_until_kickoff()
 
-    if days == 0:
-        return "🏈 NFL IS TODAY! LET'S GO!"
-    return f"🏈 NFL Kickoff is in **{days} days!**"
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
+
+
+# ------------------------------------#
+# Next scheduled run (Monday 9AM PT)  #
+# ------------------------------------#
+def next_run_time():
+    now = datetime.now(PT)
+
+    # days until next Monday
+    days_ahead = (7 - now.weekday()) % 7
+
+    # if it's Monday but past 9AM, push to next week
+    if days_ahead == 0 and now.hour >= 9:
+        days_ahead = 7
+
+    next_monday = (now + timedelta(days=days_ahead)).replace(
+        hour=9,
+        minute=0,
+        second=0,
+        microsecond=0
+    )
+
+    return next_monday
+
+
+# --------------------#
+# Scheduler loop      #
+# --------------------#
+async def nfl_scheduler(client):
+    await client.wait_until_ready()
+
+    while not client.is_closed():
+        now = datetime.now(PT)
+        run_time = next_run_time()
+        sleep_seconds = (run_time - now).total_seconds()
+
+        print(f"[Scheduler] Next NFL post: {run_time}")
+
+        # sleep until scheduled time
+        await asyncio.sleep(max(sleep_seconds, 0))
+
+        # reload state after waking
+        state = load_state()
+
+        # prevent duplicate run on restart or crash recovery
+        if state.get("last_run") == run_time.isoformat():
+            continue
+
+        channel = client.get_channel(get_channel_id("general"))
+
+        if channel:
+            message = build_countdown_message()
+            await channel.send(message)
+
+            # mark as completed
+            state["last_run"] = run_time.isoformat()
+            save_state(state)
