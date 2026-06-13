@@ -11,6 +11,9 @@ from channel_control import (
     open_channel,
     close_channel
 )
+from standings import handle_standings
+from responses import handle_mean_message, handle_nice_message
+from pickem import handle_pickem_command, results_scheduler
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -30,6 +33,7 @@ async def on_ready():
     if not hasattr(client, "nfl_task_started"):
         client.nfl_task_started = True
         asyncio.create_task(nfl_scheduler(client))
+        asyncio.create_task(results_scheduler(client))
 
 
 @client.event
@@ -40,6 +44,23 @@ async def on_message(message):
     # allow hello anywhere
     if message.content.startswith("$hello"):
         await message.channel.send("Hello!")
+        return
+
+    # standings available anywhere
+    if message.content.startswith("!standings"):
+        await handle_standings(message)
+        return
+
+    # pick em commands
+    if await handle_pickem_command(message, client):
+        return
+
+    # mean message detection anywhere
+    if await handle_mean_message(message):
+        return
+
+    # nice message detection anywhere
+    if await handle_nice_message(message):
         return
 
     # load mod channel ID with error handling

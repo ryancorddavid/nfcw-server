@@ -2,9 +2,7 @@ import json
 import discord
 
 CONFIG_PATH = "config/discord-channels.json"
-
 TEAM_ROLES = ["49ers", "Rams", "Seahawks", "Cardinals"]
-
 
 # -------------------------#
 # Load config              #
@@ -13,10 +11,8 @@ def load_channels():
     with open(CONFIG_PATH, "r") as f:
         return json.load(f)
 
-
 def get_mod_channel_id():
     return int(load_channels()["moderator-only"])
-
 
 # -------------------------#
 # Channel parsing          #
@@ -49,7 +45,6 @@ def parse_channel_from_mention(guild, mention: str):
 
     return None
 
-
 # -------------------------#
 # Channel actions          #
 # -------------------------#
@@ -76,7 +71,6 @@ async def close_channel(guild, channel, reason=None):
         embed.add_field(name="Message", value=reason, inline=False)
     await channel.send(embed=embed)
 
-
 async def open_channel(guild, channel, reason=None):
     # restore @everyone
     overwrite = channel.overwrites_for(guild.default_role)
@@ -97,5 +91,5 @@ async def open_channel(guild, channel, reason=None):
         color=discord.Color.green()
     )
     if reason:
-        embed.add_field(name="Reason", value=reason, inline=False)
+        embed.add_field(name="Message", value=reason, inline=False)
     await channel.send(embed=embed)
