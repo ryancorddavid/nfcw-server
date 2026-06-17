@@ -76,11 +76,19 @@ async def on_message(message):
 
     content = message.content.split()
 
+    if not content:
+        return
+
+    command = content[0].lower()
+
+    # only handle !close and !open here, ignore everything else in mod channel
+    if command not in ("!close", "!open"):
+        return
+
     if len(content) < 2:
         await message.channel.send("Usage: !close #channel or !open #channel")
         return
 
-    command = content[0].lower()
     target = content[1]
 
     # extract optional quoted reason e.g. "49ers lost 28-3"

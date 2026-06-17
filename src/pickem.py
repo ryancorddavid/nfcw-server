@@ -7,23 +7,113 @@ import pytz
 from server.pickem_db import (
     get_or_create_week,
     lock_week,
+    unlock_week,
     is_week_locked,
     mark_results_posted,
     save_games,
     get_games,
     set_game_score,
+    get_mnf_game,
     save_pick,
     get_user_picks,
+    get_all_picks_for_week,
     calculate_and_save_scores,
     get_weekly_leaderboard,
     get_overall_leaderboard,
 )
 from countdown import get_channel_id
+from channel_control import open_channel, close_channel
 
 PT = pytz.timezone("America/Los_Angeles")
 PICKEM_CHANNEL = "pick_ems"
 
 RESULTS_RETRY_INTERVAL = 30 * 60  # 30 minutes
+PICKING_LOCK_TIMEOUT = 5 * 60  # 5 minutes
+
+# maps ESPN displayName to the custom emoji name uploaded in the server
+TEAM_EMOJI_NAMES = {
+    "San Francisco 49ers": "49ers",
+    "Chicago Bears": "bears",
+    "Cincinnati Bengals": "bengals",
+    "Buffalo Bills": "bills",
+    "Denver Broncos": "broncos",
+    "Cleveland Browns": "browns",
+    "Tampa Bay Buccaneers": "buccaneers",
+    "Arizona Cardinals": "cardinals",
+    "Los Angeles Chargers": "chargers",
+    "Kansas City Chiefs": "chiefs",
+    "Indianapolis Colts": "colts",
+    "Washington Commanders": "commanders",
+    "Dallas Cowboys": "cowboys",
+    "Miami Dolphins": "dolphins",
+    "Philadelphia Eagles": "eagles",
+    "Atlanta Falcons": "falcons",
+    "New York Giants": "giants",
+    "Jacksonville Jaguars": "jaguars",
+    "New York Jets": "jets",
+    "Detroit Lions": "lions",
+    "Green Bay Packers": "packers",
+    "Carolina Panthers": "panthers",
+    "New England Patriots": "patriots",
+    "Las Vegas Raiders": "raiders",
+    "Los Angeles Rams": "rams",
+    "Baltimore Ravens": "ravens",
+    "New Orleans Saints": "saints",
+    "Seattle Seahawks": "seahawks",
+    "Pittsburgh Steelers": "steelers",
+    "Houston Texans": "texans",
+    "Tennessee Titans": "titans",
+    "Minnesota Vikings": "vikings",
+}
+
+# official 2-3 letter abbreviations for button labels
+TEAM_ABBREVIATIONS = {
+    "San Francisco 49ers": "SF",
+    "Chicago Bears": "CHI",
+    "Cincinnati Bengals": "CIN",
+    "Buffalo Bills": "BUF",
+    "Denver Broncos": "DEN",
+    "Cleveland Browns": "CLE",
+    "Tampa Bay Buccaneers": "TB",
+    "Arizona Cardinals": "ARI",
+    "Los Angeles Chargers": "LAC",
+    "Kansas City Chiefs": "KC",
+    "Indianapolis Colts": "IND",
+    "Washington Commanders": "WAS",
+    "Dallas Cowboys": "DAL",
+    "Miami Dolphins": "MIA",
+    "Philadelphia Eagles": "PHI",
+    "Atlanta Falcons": "ATL",
+    "New York Giants": "NYG",
+    "Jacksonville Jaguars": "JAX",
+    "New York Jets": "NYJ",
+    "Detroit Lions": "DET",
+    "Green Bay Packers": "GB",
+    "Carolina Panthers": "CAR",
+    "New England Patriots": "NE",
+    "Las Vegas Raiders": "LV",
+    "Los Angeles Rams": "LAR",
+    "Baltimore Ravens": "BAL",
+    "New Orleans Saints": "NO",
+    "Seattle Seahawks": "SEA",
+    "Pittsburgh Steelers": "PIT",
+    "Houston Texans": "HOU",
+    "Tennessee Titans": "TEN",
+    "Minnesota Vikings": "MIN",
+}
+
+
+def get_team_emoji(guild, team_name: str):
+    """Look up the custom emoji for a team by its full ESPN display name."""
+    emoji_name = TEAM_EMOJI_NAMES.get(team_name)
+    if not emoji_name or not guild:
+        return None
+    return discord.utils.get(guild.emojis, name=emoji_name)
+
+
+def get_team_abbreviation(team_name: str) -> str:
+    """Get the short label for buttons; falls back to full name if not found."""
+    return TEAM_ABBREVIATIONS.get(team_name, team_name)
 
 
 # --------------------------------#
@@ -91,9 +181,12 @@ async def schedule_auto_lock(client, week_number: int):
     now = datetime.now(timezone.utc)
     wait_seconds = (first_kickoff - now).total_seconds()
 
-    if wait_seconds > 0:
-        print(f"[PickEm] Auto-lock scheduled in {wait_seconds:.0f}s for week {week_number}")
-        await asyncio.sleep(wait_seconds)
+    if wait_seconds <= 0:
+        print(f"[PickEm] Kickoff for week {week_number} already passed, skipping auto-lock scheduling.")
+        return
+
+    print(f"[PickEm] Auto-lock scheduled in {wait_seconds:.0f}s for week {week_number}")
+    await asyncio.sleep(wait_seconds)
 
     if not is_week_locked(week_number):
         lock_week(week_number)
@@ -112,24 +205,37 @@ async def schedule_auto_lock(client, week_number: int):
 # --------------------------------#
 # Build matchup buttons view      #
 # --------------------------------#
-def build_picks_view(games: list, week_number: int, week_id: int):
+def build_picks_view(games: list, week_number: int, week_id: int, owner_id: int, guild=None, done_button: discord.ui.Button = None):
     view = discord.ui.View(timeout=None)
 
-    for game in games:
-        view.add_item(PickButton(
-            game_id=game["id"],
-            team=game["home_team"],
-            week_number=week_number,
-            week_id=week_id,
-            is_mnf=game["is_mnf"]
-        ))
+    for i, game in enumerate(games):
+        row = i  # each game gets its own row (max 5 rows = 5 games per message)
+        away_emoji = get_team_emoji(guild, game["away_team"])
+        home_emoji = get_team_emoji(guild, game["home_team"])
+
         view.add_item(PickButton(
             game_id=game["id"],
             team=game["away_team"],
             week_number=week_number,
             week_id=week_id,
-            is_mnf=game["is_mnf"]
+            is_mnf=game["is_mnf"],
+            owner_id=owner_id,
+            row=row,
+            emoji=away_emoji
         ))
+        view.add_item(PickButton(
+            game_id=game["id"],
+            team=game["home_team"],
+            week_number=week_number,
+            week_id=week_id,
+            is_mnf=game["is_mnf"],
+            owner_id=owner_id,
+            row=row,
+            emoji=home_emoji
+        ))
+
+    if done_button:
+        view.add_item(done_button)
 
     return view
 
@@ -138,19 +244,28 @@ def build_picks_view(games: list, week_number: int, week_id: int):
 # Pick Button                     #
 # --------------------------------#
 class PickButton(discord.ui.Button):
-    def __init__(self, game_id: int, team: str, week_number: int, week_id: int, is_mnf: bool):
+    def __init__(self, game_id: int, team: str, week_number: int, week_id: int, is_mnf: bool, owner_id: int, row: int = 0, emoji=None):
         super().__init__(
-            label=team,
+            label=get_team_abbreviation(team),
             style=discord.ButtonStyle.primary,
-            custom_id=f"pick_{game_id}_{team}"
+            custom_id=f"pick_{game_id}_{team}",
+            row=row,
+            emoji=emoji
         )
         self.game_id = game_id
         self.team = team
         self.week_number = week_number
         self.week_id = week_id
         self.is_mnf = is_mnf
+        self.owner_id = owner_id
 
     async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "It's not your turn to pick right now.", ephemeral=True
+            )
+            return
+
         if is_week_locked(self.week_number):
             await interaction.response.send_message(
                 "🔒 Picks are locked for this week.", ephemeral=True
@@ -163,7 +278,8 @@ class PickButton(discord.ui.Button):
                     game_id=self.game_id,
                     team=self.team,
                     week_number=self.week_number,
-                    week_id=self.week_id
+                    week_id=self.week_id,
+                    pick_button=self
                 )
             )
         else:
@@ -174,9 +290,19 @@ class PickButton(discord.ui.Button):
                 week_id=self.week_id,
                 picked_team=self.team
             )
-            await interaction.response.send_message(
-                f"✅ You picked **{self.team}**!", ephemeral=True
-            )
+            await self.lock_matchup_row(interaction)
+
+    async def lock_matchup_row(self, interaction: discord.Interaction):
+        """Disable both buttons in this matchup row and highlight the picked team."""
+        for item in self.view.children:
+            if isinstance(item, PickButton) and item.game_id == self.game_id:
+                item.disabled = True
+                if item.team == self.team:
+                    item.style = discord.ButtonStyle.success
+                else:
+                    item.style = discord.ButtonStyle.secondary
+
+        await interaction.response.edit_message(view=self.view)
 
 
 # --------------------------------#
@@ -185,17 +311,19 @@ class PickButton(discord.ui.Button):
 class TiebreakerModal(discord.ui.Modal, title="Monday Night Football Tiebreaker"):
     tiebreaker = discord.ui.TextInput(
         label="Predict the total combined score",
+        style=discord.TextStyle.short,
         placeholder="e.g. 47",
         required=True,
         max_length=4
     )
 
-    def __init__(self, game_id: int, team: str, week_number: int, week_id: int):
+    def __init__(self, game_id: int, team: str, week_number: int, week_id: int, pick_button: "PickButton"):
         super().__init__()
         self.game_id = game_id
         self.team = team
         self.week_number = week_number
         self.week_id = week_id
+        self.pick_button = pick_button
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -215,17 +343,127 @@ class TiebreakerModal(discord.ui.Modal, title="Monday Night Football Tiebreaker"
             tiebreaker_score=score
         )
 
-        await interaction.response.send_message(
-            f"✅ You picked **{self.team}** with a tiebreaker of **{score}**!", ephemeral=True
+        # disable both buttons in this matchup row, highlight the picked team
+        view = self.pick_button.view
+        for item in view.children:
+            if isinstance(item, PickButton) and item.game_id == self.game_id:
+                item.disabled = True
+                if item.team == self.team:
+                    item.style = discord.ButtonStyle.success
+                    item.label = f"{get_team_abbreviation(item.team)} ({score})"
+                else:
+                    item.style = discord.ButtonStyle.secondary
+
+        await interaction.response.edit_message(view=view)
+
+
+# --------------------------------#
+# Done Button + channel unlock    #
+# --------------------------------#
+class DoneButton(discord.ui.Button):
+    def __init__(self, user_id: int, week_number: int, all_messages: list = None):
+        super().__init__(
+            label="✅ Done Picking",
+            style=discord.ButtonStyle.success,
+            custom_id=f"done_{user_id}_{week_number}"
         )
+        self.target_user_id = user_id
+        self.week_number = week_number
+        self.all_messages = all_messages or []
+
+    async def callback(self, interaction: discord.Interaction):
+        print("[PickEm] Done button clicked")
+
+        if interaction.user.id != self.target_user_id:
+            await interaction.response.send_message(
+                "Only the person who ran the command can finish up.", ephemeral=True
+            )
+            return
+
+        try:
+            # remove buttons from every matchup message for this session
+            for msg in self.all_messages:
+                try:
+                    await msg.edit(view=None)
+                except discord.NotFound:
+                    pass
+
+            # remove the Done button itself from this message
+            await interaction.response.edit_message(view=None)
+            print("[PickEm] Cleared button views")
+
+            # post the thank you + picks summary
+            picks = get_user_picks(str(interaction.user.id), self.week_number)
+            print(f"[PickEm] Retrieved {len(picks)} picks for summary")
+
+            embed = build_thanks_embed(interaction.user, self.week_number, picks)
+            await interaction.followup.send(embed=embed)
+            print("[PickEm] Sent thanks embed")
+
+            await unlock_pickem_channel(interaction.guild, interaction.client, self.week_number)
+            print("[PickEm] Channel unlocked")
+
+        except Exception as e:
+            import traceback
+            print(f"[PickEm] ERROR in DoneButton callback: {e}")
+            traceback.print_exc()
+
+
+def build_thanks_embed(user, week_number: int, picks: list) -> discord.Embed:
+    embed = discord.Embed(
+        title="🏈 Thanks for playing!",
+        description=f"Here's what **{user.display_name}** picked for Week {week_number}:",
+        color=discord.Color.green()
+    )
+
+    for pick in picks:
+        mnf_tag = " 🌙 MNF" if pick.get("is_mnf") else ""
+        tb = f" (Tiebreaker: {pick['tiebreaker_score']})" if pick.get("tiebreaker_score") else ""
+        embed.add_field(
+            name=f"{pick['away_team']} @ {pick['home_team']}{mnf_tag}",
+            value=f"Picked: **{pick['picked_team']}**{tb}",
+            inline=False
+        )
+
+    embed.set_footer(text=f"Week {week_number} • NFC West Pick'Em")
+    return embed
+
+
+async def unlock_pickem_channel(guild, client, week_number: int):
+    channel_id = int(get_channel_id(PICKEM_CHANNEL))
+    channel = client.get_channel(channel_id)
+
+    if not channel:
+        return
+
+    await open_channel(guild, channel)
+    print(f"[PickEm] Channel unlocked after week {week_number} picks session")
+
+
+async def auto_unlock_after_timeout(guild, client, week_number: int, locked_by: int):
+    await asyncio.sleep(PICKING_LOCK_TIMEOUT)
+
+    channel_id = int(get_channel_id(PICKEM_CHANNEL))
+    channel = client.get_channel(channel_id)
+
+    if not channel:
+        return
+
+    overwrite = channel.overwrites_for(channel.guild.default_role)
+
+    # only auto-unlock if it's still locked (avoid reopening if user already finished)
+    if overwrite.send_messages is False:
+        await open_channel(guild, channel)
+        print(f"[PickEm] Channel auto-unlocked after {PICKING_LOCK_TIMEOUT}s timeout")
 
 
 # --------------------------------#
 # Build matchup embed             #
 # --------------------------------#
-def build_matchups_embed(week_number: int, games: list) -> discord.Embed:
+def build_matchups_embed(week_number: int, games: list, part: int = 1, total: int = 1) -> discord.Embed:
+    part_tag = f" (Part {part}/{total})" if total > 1 else ""
     embed = discord.Embed(
-        title=f"🏈 NFL Pick'Em — Week {week_number}",
+        title=f"🏈 NFL Pick'Em — Week {week_number}{part_tag}",
         description="Click a team to make your pick. MNF picks will ask for a tiebreaker score.",
         color=discord.Color.dark_gold()
     )
@@ -295,6 +533,41 @@ def build_overall_leaderboard_embed(leaderboard: list) -> discord.Embed:
         )
 
     embed.set_footer(text="NFC West Pick'Em • All-Time Standings")
+    return embed
+
+
+# --------------------------------#
+# Build rules embed               #
+# --------------------------------#
+def build_rules_embed() -> discord.Embed:
+    embed = discord.Embed(
+        title="📋 NFC West Pick'Em Rules",
+        description="How scoring works each week:",
+        color=discord.Color.blurple()
+    )
+
+    embed.add_field(
+        name="🥇 Most Correct Picks",
+        value="The player with the most correct picks for the week earns **3 points** (Win).",
+        inline=False
+    )
+    embed.add_field(
+        name="🌙 Tiebreaker Win",
+        value="If players are tied for the most correct picks, whoever is closest to the actual combined score of Monday Night Football wins the tiebreaker and earns **2 points** (Win).",
+        inline=False
+    )
+    embed.add_field(
+        name="🤝 Tie",
+        value="Any other tie earns **1 point** each.",
+        inline=False
+    )
+    embed.add_field(
+        name="❌ Otherwise",
+        value="No points earned.",
+        inline=False
+    )
+
+    embed.set_footer(text="NFC West Pick'Em")
     return embed
 
 
@@ -389,11 +662,37 @@ async def handle_pickem_command(message, client):
             return True
 
         week_id = get_or_create_week(week_number)
-        embed = build_matchups_embed(week_number, games)
-        view = build_picks_view(games, week_number, week_id)
-        await channel.send(embed=embed, view=view)
 
-        # schedule auto-lock
+        # lock channel chat while this user makes their picks (prevents clutter)
+        await close_channel(message.guild, channel)
+
+        # split into chunks of 4 games (8 buttons) per message to stay under Discord 25 button limit
+        chunk_size = 5
+        chunks = [games[i:i + chunk_size] for i in range(0, len(games), chunk_size)]
+
+        sent_messages = []
+        done_button = None
+
+        for i, chunk in enumerate(chunks):
+            embed = build_matchups_embed(week_number, chunk, part=i + 1, total=len(chunks))
+            is_last_chunk = (i == len(chunks) - 1)
+
+            if is_last_chunk:
+                done_button = DoneButton(message.author.id, week_number)
+
+            view = build_picks_view(chunk, week_number, week_id, owner_id=message.author.id, guild=message.guild, done_button=done_button if is_last_chunk else None)
+            sent_msg = await channel.send(embed=embed, view=view)
+            sent_messages.append(sent_msg)
+
+        # now that all messages are sent, give the Done button the full list to clean up later
+        # (exclude the last message since its own response.edit_message call handles that one)
+        if done_button:
+            done_button.all_messages = sent_messages[:-1]
+
+        # auto-unlock if the user never clicks Done
+        asyncio.create_task(auto_unlock_after_timeout(message.guild, client, week_number, message.author.id))
+
+        # schedule auto-lock for picks (separate from the chat lock above)
         asyncio.create_task(schedule_auto_lock(client, week_number))
         return True
 
@@ -424,6 +723,18 @@ async def handle_pickem_command(message, client):
 
         lock_week(week_number)
         await message.channel.send(f"🔒 Week {week_number} picks have been locked.")
+        return True
+
+    # ── !unlock weekN ───────────────────────────────
+    if content.startswith("!unlock"):
+        try:
+            week_number = int(content.split()[1].replace("week", ""))
+        except (IndexError, ValueError):
+            await message.channel.send("❌ Usage: `!unlock week2`")
+            return True
+
+        unlock_week(week_number)
+        await message.channel.send(f"🔓 Week {week_number} picks have been unlocked.")
         return True
 
     # ── !setscore ───────────────────────────────────
@@ -461,6 +772,12 @@ async def handle_pickem_command(message, client):
     if content.startswith("!leaderboard"):
         overall_lb = get_overall_leaderboard()
         embed = build_overall_leaderboard_embed(overall_lb)
+        await channel.send(embed=embed)
+        return True
+
+    # ── !pickemrules ────────────────────────────────
+    if content.startswith("!pickemrules"):
+        embed = build_rules_embed()
         await channel.send(embed=embed)
         return True
 
