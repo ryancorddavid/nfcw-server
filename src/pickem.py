@@ -1,6 +1,8 @@
 import discord
 import aiohttp
 import asyncio
+import json
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import pytz
 
@@ -31,76 +33,14 @@ RESULTS_RETRY_INTERVAL = 30 * 60  # 30 minutes
 PICKING_LOCK_TIMEOUT = 5 * 60  # 5 minutes
 
 # maps ESPN displayName to the custom emoji name uploaded in the server
-TEAM_EMOJI_NAMES = {
-    "San Francisco 49ers": "49ers",
-    "Chicago Bears": "bears",
-    "Cincinnati Bengals": "bengals",
-    "Buffalo Bills": "bills",
-    "Denver Broncos": "broncos",
-    "Cleveland Browns": "browns",
-    "Tampa Bay Buccaneers": "buccaneers",
-    "Arizona Cardinals": "cardinals",
-    "Los Angeles Chargers": "chargers",
-    "Kansas City Chiefs": "chiefs",
-    "Indianapolis Colts": "colts",
-    "Washington Commanders": "commanders",
-    "Dallas Cowboys": "cowboys",
-    "Miami Dolphins": "dolphins",
-    "Philadelphia Eagles": "eagles",
-    "Atlanta Falcons": "falcons",
-    "New York Giants": "giants",
-    "Jacksonville Jaguars": "jaguars",
-    "New York Jets": "jets",
-    "Detroit Lions": "lions",
-    "Green Bay Packers": "packers",
-    "Carolina Panthers": "panthers",
-    "New England Patriots": "patriots",
-    "Las Vegas Raiders": "raiders",
-    "Los Angeles Rams": "rams",
-    "Baltimore Ravens": "ravens",
-    "New Orleans Saints": "saints",
-    "Seattle Seahawks": "seahawks",
-    "Pittsburgh Steelers": "steelers",
-    "Houston Texans": "texans",
-    "Tennessee Titans": "titans",
-    "Minnesota Vikings": "vikings",
-}
+def _load_json_config(filename: str) -> dict:
+    config_path = Path("config") / filename
+    with open(config_path, "r") as f:
+        return json.load(f)
 
-# official 2-3 letter abbreviations for button labels
-TEAM_ABBREVIATIONS = {
-    "San Francisco 49ers": "SF",
-    "Chicago Bears": "CHI",
-    "Cincinnati Bengals": "CIN",
-    "Buffalo Bills": "BUF",
-    "Denver Broncos": "DEN",
-    "Cleveland Browns": "CLE",
-    "Tampa Bay Buccaneers": "TB",
-    "Arizona Cardinals": "ARI",
-    "Los Angeles Chargers": "LAC",
-    "Kansas City Chiefs": "KC",
-    "Indianapolis Colts": "IND",
-    "Washington Commanders": "WAS",
-    "Dallas Cowboys": "DAL",
-    "Miami Dolphins": "MIA",
-    "Philadelphia Eagles": "PHI",
-    "Atlanta Falcons": "ATL",
-    "New York Giants": "NYG",
-    "Jacksonville Jaguars": "JAX",
-    "New York Jets": "NYJ",
-    "Detroit Lions": "DET",
-    "Green Bay Packers": "GB",
-    "Carolina Panthers": "CAR",
-    "New England Patriots": "NE",
-    "Las Vegas Raiders": "LV",
-    "Los Angeles Rams": "LAR",
-    "Baltimore Ravens": "BAL",
-    "New Orleans Saints": "NO",
-    "Seattle Seahawks": "SEA",
-    "Pittsburgh Steelers": "PIT",
-    "Houston Texans": "HOU",
-    "Tennessee Titans": "TEN",
-    "Minnesota Vikings": "MIN",
-}
+
+TEAM_EMOJI_NAMES = _load_json_config("team-emoji-names.json")
+TEAM_ABBREVIATIONS = _load_json_config("team-abbreviations.json")
 
 
 def get_team_emoji(guild, team_name: str):
