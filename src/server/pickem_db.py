@@ -52,6 +52,15 @@ def lock_week(week_number: int):
     conn.close()
 
 
+def unlock_week(week_number: int):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE weeks SET locked = FALSE WHERE week_number = %s", (week_number,))
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
 def is_week_locked(week_number: int) -> bool:
     conn = get_connection()
     cursor = conn.cursor()
@@ -223,8 +232,13 @@ def get_all_picks_for_week(week_number: int) -> list:
 # --------------------------------#
 def calculate_and_save_scores(week_number: int):
     """
-    Calculate weekly points for each user and update total_points.
-    Tiebreaker used only to break ties in leaderboard, not as points.
+    Scoring rules:
+      - Outright most correct picks in the week -> 3 points (Win)
+      - If tied for the TOP spot, tiebreaker (closest to actual MNF combined score) decides:
+            tiebreaker winner among the tied group -> 2 points
+            remaining tied-for-first users           -> 1 point
+      - Any other tie (not for first place)          -> 1 point each
+      - Everyone else (strictly lower, not tied)       -> 0 points
     """
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
@@ -254,8 +268,9 @@ def calculate_and_save_scores(week_number: int):
 
     picks = cursor.fetchall()
 
-    # tally points per user
-    user_points = {}
+    # tally correct picks per user, and capture their MNF tiebreaker guess + actual MNF total
+    user_data = {}
+    mnf_actual_total = None
 
     for pick in picks:
         uid = pick["user_id"]
@@ -267,33 +282,103 @@ def calculate_and_save_scores(week_number: int):
             winner = pick["away_team"]
 
         correct = pick["picked_team"] == winner
-        points = 1 if correct else 0
 
-        if uid not in user_points:
-            user_points[uid] = {"username": username, "points": 0, "tiebreaker": None}
+        if uid not in user_data:
+            user_data[uid] = {"username": username, "correct": 0, "tiebreaker_guess": None}
 
-        user_points[uid]["points"] += points
+        if correct:
+            user_data[uid]["correct"] += 1
 
-        if pick["is_mnf"] and pick["tiebreaker_score"] is not None:
-            user_points[uid]["tiebreaker"] = pick["tiebreaker_score"]
+        if pick["is_mnf"]:
+            if pick["tiebreaker_score"] is not None:
+                user_data[uid]["tiebreaker_guess"] = pick["tiebreaker_score"]
+            if mnf_actual_total is None:
+                mnf_actual_total = pick["home_score"] + pick["away_score"]
+
+    if not user_data:
+        conn.close()
+        return
+
+    # rank users by correct picks, descending
+    ranked = sorted(user_data.items(), key=lambda kv: kv[1]["correct"], reverse=True)
+
+    # group users by their correct-pick count (tiers)
+    top_score = ranked[0][1]["correct"]
+
+    final_points = {}
+
+    # find everyone tied for the top score
+    top_tier = [uid for uid, data in ranked if data["correct"] == top_score]
+
+    if len(top_tier) == 1:
+        # outright winner, no tie
+        winner_uid = top_tier[0]
+        final_points[winner_uid] = 3
+    else:
+        # tied for first -> resolve with tiebreaker (closest to actual MNF total)
+        if mnf_actual_total is not None:
+            def distance(uid):
+                guess = user_data[uid]["tiebreaker_guess"]
+                if guess is None:
+                    return float("inf")
+                return abs(guess - mnf_actual_total)
+
+            tiebreak_winner = min(top_tier, key=distance)
+            final_points[tiebreak_winner] = 2
+
+            for uid in top_tier:
+                if uid != tiebreak_winner:
+                    final_points[uid] = 1
+        else:
+            # no MNF data available to break the tie, everyone tied gets 1 point
+            for uid in top_tier:
+                final_points[uid] = 1
+
+    # handle ties at lower tiers (not first place) -> 1 point each
+    remaining = [(uid, data) for uid, data in ranked if uid not in final_points]
+
+    # group remaining by correct count
+    from itertools import groupby
+    remaining.sort(key=lambda kv: kv[1]["correct"], reverse=True)
+
+    for correct_count, group in groupby(remaining, key=lambda kv: kv[1]["correct"]):
+        group = list(group)
+        if len(group) > 1:
+            for uid, _ in group:
+                final_points[uid] = 1
+        else:
+            uid, _ = group[0]
+            final_points[uid] = 0
+
+    # map points to result type: 3=Win, 2=Win(tiebreak), 1=Tie, 0=Loss
+    def result_type(points):
+        if points in (3, 2):
+            return "W"
+        elif points == 1:
+            return "T"
+        else:
+            return "L"
 
     # save weekly scores and update totals
     update_cursor = conn.cursor()
 
-    for uid, data in user_points.items():
-        # upsert weekly score
+    for uid, data in user_data.items():
+        points = final_points.get(uid, 0)
+        username = data["username"]
+        result = result_type(points)
+
         update_cursor.execute(
             """
-            INSERT INTO scores (user_id, username, week_id, weekly_points, total_points)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO scores (user_id, username, week_id, weekly_points, total_points, result)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 weekly_points = VALUES(weekly_points),
-                username = VALUES(username)
+                username = VALUES(username),
+                result = VALUES(result)
             """,
-            (uid, data["username"], week_id, data["points"], data["points"])
+            (uid, username, week_id, points, points, result)
         )
 
-        # update total_points as sum of all weeks (use subquery alias to avoid MySQL 8 limitation)
         update_cursor.execute(
             """
             UPDATE scores SET total_points = (
@@ -311,14 +396,13 @@ def calculate_and_save_scores(week_number: int):
     cursor.close()
     conn.close()
 
-
 def get_weekly_leaderboard(week_number: int) -> list:
     conn = get_connection()
     cursor = conn.cursor(dictionary=True)
 
     cursor.execute(
         """
-        SELECT s.user_id, s.username, s.weekly_points,
+        SELECT s.user_id, s.username, s.weekly_points, s.result,
                p.tiebreaker_score
         FROM scores s
         JOIN weeks w ON s.week_id = w.id
@@ -342,7 +426,13 @@ def get_overall_leaderboard() -> list:
 
     cursor.execute(
         """
-        SELECT user_id, username, SUM(weekly_points) as total_points
+        SELECT
+            user_id,
+            username,
+            SUM(weekly_points) as total_points,
+            SUM(CASE WHEN result = 'W' THEN 1 ELSE 0 END) as wins,
+            SUM(CASE WHEN result = 'L' THEN 1 ELSE 0 END) as losses,
+            SUM(CASE WHEN result = 'T' THEN 1 ELSE 0 END) as ties
         FROM scores
         GROUP BY user_id, username
         ORDER BY total_points DESC
