@@ -6,8 +6,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code
+# Copy source code and config
 COPY src/ ./src/
+COPY config/ ./config/
 
 # Run the bot
 CMD ["python", "src/main.py"]
