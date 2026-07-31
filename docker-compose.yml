@@ -1,10 +1,16 @@
 services:
   bot:
     build: .
-    db:
-      image: mysql:8
     env_file: .env
     restart: unless-stopped
-    # Lets the container reach MySQL running on your Mac via host.docker.internal
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      - db
+
+  db:
+    image: mysql:8
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: your_root_password
+      MYSQL_DATABASE: your_db_name
+    ports:
+      - "3306:3306"
