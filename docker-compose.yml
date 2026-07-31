@@ -1,6 +1,8 @@
 services:
   bot:
     build: .
+    db:
+      image: mysql:8
     env_file: .env
     restart: unless-stopped
     # Lets the container reach MySQL running on your Mac via host.docker.internal
