@@ -60,9 +60,42 @@ def get_team_abbreviation(team_name: str) -> str:
 # ESPN Schedule Fetch             #
 # --------------------------------#
 async def fetch_nfl_schedule(week_number: int) -> list:
-    url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?seasontype=2&week={week_number}"
-
+    """
+    NOTE: ESPN's scoreboard endpoint has a known CDN caching bug when queried
+    with `seasontype` + `week` params together — it can silently return a
+    stale/previous season's data instead of 404ing or erroring. To avoid it,
+    we first hit the bare scoreboard endpoint (which is reliably live) to read
+    the season's `calendar`, find the actual date range for the requested
+    week, then re-query using `dates=YYYYMMDD-YYYYMMDD`, which isn't affected
+    by that caching issue.
+    """
     async with aiohttp.ClientSession() as session:
+        # Step 1: get current season + calendar (always fresh)
+        async with session.get(
+            "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
+        ) as response:
+            base_data = await response.json(content_type=None)
+
+        # Find the "Regular Season" calendar block, then the matching week entry
+        week_entry = None
+        for block in base_data.get("leagues", [{}])[0].get("calendar", []):
+            if block.get("label") == "Regular Season":
+                for entry in block.get("entries", []):
+                    if entry.get("value") == str(week_number):
+                        week_entry = entry
+                        break
+                break
+
+        if not week_entry:
+            print(f"[PickEm] Could not find calendar entry for week {week_number}")
+            return []
+
+        start = datetime.fromisoformat(week_entry["startDate"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(week_entry["endDate"].replace("Z", "+00:00"))
+        dates_param = f"{start:%Y%m%d}-{end:%Y%m%d}"
+
+        # Step 2: query by explicit date range instead of seasontype/week
+        url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={dates_param}&limit=1000"
         async with session.get(url) as response:
             data = await response.json(content_type=None)
 
@@ -78,9 +111,8 @@ async def fetch_nfl_schedule(week_number: int) -> list:
         kickoff_str = competition["date"]
         kickoff = datetime.strptime(kickoff_str, "%Y-%m-%dT%H:%MZ").replace(tzinfo=timezone.utc)
 
-        # MNF = Monday kickoff
         kickoff_pt = kickoff.astimezone(PT)
-        is_mnf = kickoff_pt.weekday() == 0  # Monday
+        is_mnf = kickoff_pt.weekday() == 0
 
         games.append({
             "home_team": home["team"]["displayName"],
@@ -90,17 +122,6 @@ async def fetch_nfl_schedule(week_number: int) -> list:
         })
 
     games.sort(key=lambda g: g["kickoff_time"])
-    return games
-
-
-# --------------------------------#
-# Fetch and save schedule         #
-# --------------------------------#
-async def fetch_and_save_schedule(week_number: int) -> list:
-    games = await fetch_nfl_schedule(week_number)
-    if games:
-        save_games(week_number, games)
-        print(f"[PickEm] Saved {len(games)} games for week {week_number}")
     return games
 
 
