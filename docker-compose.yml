@@ -11,7 +11,7 @@ services:
     restart: unless-stopped
     command: --innodb-buffer-pool-size=64M
     environment:
-      MYSQL_ROOT_PASSWORD:
-      MYSQL_DATABASE: your_db_name
+      MYSQL_ROOT_PASSWORD: "${DB_PASSWORD}"  # <--- Wrap in double quotes
+      MYSQL_DATABASE: "${DB_NAME}"
     ports:
       - "3306:3306"
