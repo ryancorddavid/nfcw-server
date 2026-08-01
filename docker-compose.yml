@@ -15,3 +15,5 @@ services:
       MYSQL_DATABASE: "${DB_NAME}"
     ports:
       - "3306:3306"
+volume:
+  mysql_data:
