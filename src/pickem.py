@@ -667,8 +667,8 @@ async def handle_pickem_command(message, client):
 
         await message.channel.send(f"⏳ Fetching schedule for week {week_number}...")
         games = await fetch_nfl_schedule(week_number)
-
         if games:
+            save_games(week_number, games)
             await message.channel.send(f"✅ Saved {len(games)} games for week {week_number}.")
         else:
             await message.channel.send(f"❌ No games found for week {week_number}.")
